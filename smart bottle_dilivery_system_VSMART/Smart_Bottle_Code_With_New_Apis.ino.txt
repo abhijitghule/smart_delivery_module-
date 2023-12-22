@@ -1,0 +1,543 @@
+
+
+// FIle Operations
+#include <SPIFFS.h>
+const char* admin_filename = "/admin.txt";
+const char* customer_filename = "/customer.txt";
+String admin_password;
+String customer_password;
+
+
+// LCD
+#include <LiquidCrystal_I2C.h>
+LiquidCrystal_I2C lcd(0x3f, 20, 4); //pin22,21,SCL,SDA
+
+// WiFi
+#include <WiFiManager.h>
+
+//// Keyboard
+#include "Keypad.h"
+char keypressed;
+char keys[4][4] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[4] = {19, 18, 5, 17}; //connect to the row pinouts of the keypad
+byte colPins[4] = {16, 4, 0, 2}; //connect to the column pinouts of the keypad
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, 4, 4);
+
+
+// Relay Pin
+const int relay = 14;
+
+// Time delay for api
+unsigned long previousMillis = 0; // last time update
+long interval = 10000; // interval at which to do something (milliseconds)
+
+
+// Load Cell Library
+#include <HX711_ADC.h>
+//pins:
+const int HX711_dout = 26; //mcu > HX711 dout pin
+const int HX711_sck = 27; //mcu > HX711 sck pin
+//HX711 constructor:
+HX711_ADC LoadCell(HX711_dout, HX711_sck);
+const int calVal_eepromAdress = 0;
+unsigned long t = 0;
+
+// Time Library
+#include <TimeLib.h>
+// Variable for validation
+boolean admin_placed_bottle = false;
+boolean customer_taken_bottle = false;
+boolean door_opened = false;
+String Membership_ID = "4444";
+int jobId;
+const char* result;
+const char* isAnyJob;
+const char* jobType;
+const char* jobValue;
+const char* true_var = "true";
+const char* false_var = "false";
+const char* open_door = "open_door";
+const char* check_device = "check_device";
+const char* change_password = "change_password";
+
+
+
+/////////////////////////////
+//     System Setup        //
+/////////////////////////////
+
+void setup() {
+
+  Serial.begin(9600);
+  pinMode(relay, OUTPUT);
+  digitalWrite(relay,INPUT_PULLUP);
+
+  // Initialize File System
+  if (SPIFFS.begin()) {
+    Serial.println("SPIFFS Initialized Successed .... :)");
+  }
+  else {
+    Serial.println("SPIFFS Initialize Failed .......... :( ");
+  }
+  delay(1000);
+
+  Initial_VF_Info();
+
+  checkWiFiConnection();
+
+  readPasswordsFromFile();
+  
+  init_load_sensor();
+
+  xTaskCreate(
+    systemStatus,          /* Task function. */
+    "systemStatus",        /* String with name of task. */
+    10000,            /* Stack size in bytes. */
+    NULL,             /* Parameter passed as input of the task */
+    1,                /* Priority of the task. */
+    NULL);            /* Task handle. */
+
+}
+
+
+
+
+/////////////////////////////
+//      System Loop        //
+/////////////////////////////
+
+void loop() {
+  
+ if (WiFi.status() != WL_CONNECTED) {  lcd.setCursor(0, 0);    lcd.print("wait for wifi");  }
+  
+ else if (door_opened==false) { lcd.setCursor(0, 0); lcd.print("WELCOME TO SMART");  lcd.setCursor(1, 1);  lcd.print("BOTTLE SYSTEM");}
+  
+  Serial.println("Customer Pass : " + customer_password);
+  Serial.println("Admin Pass : " + admin_password);
+
+  // Check for keyboard input
+  checkKeyboardInput();
+
+  // Bottle status
+  chk_bottle_weight();
+  check_bottle_placed_delay();
+  
+}
+
+
+
+
+////////////////////////////////////
+//      Keyboad Input Handler     //
+////////////////////////////////////
+
+String takeKeyboardInput() {
+  String inputData = "";
+  for (int i = 0; i < 4; i++) {
+    Serial.println("Keyboard For Loop");
+    keypressed = keypad.getKey();
+    if (keypressed == NO_KEY) {      i--;      continue;   }
+    lcd.setCursor(i, 1);                                 //This to write "*" on the LCD whenever a key is pressed it's position is controlled by j
+    lcd.print("*");
+    inputData = inputData + keypressed;
+  }
+  return inputData;
+}
+
+
+void checkKeyboardInput() {
+  
+  keypressed = keypad.getKey();               //Constantly waiting for a key to be pressed
+  if (keypressed == 'D') {                    // * to open the lock
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Enter the code");
+
+    String entered_pass = takeKeyboardInput();;
+
+    if (entered_pass == customer_password) {
+      lcd.clear(); lcd.setCursor(0, 0); lcd.print("Customer");
+      Serial.println("Customer Pass : " + entered_pass);
+     // delay(1000);
+      //callApi("sms/customer?number=9420597784", "customer");
+     // delay(1000);
+      openDoor();
+    }
+
+    else if (entered_pass == admin_password ) {
+      lcd.clear();      lcd.setCursor(0, 0);      lcd.print("admin");
+      Serial.println("Admin Pass : " + entered_pass);
+//      delay(1000);
+//      callApi("sms/admin?number= ", "admin");//SET ADMIN MOB. NO//
+//      delay(1000);
+      openDoor();
+    }
+
+    else {
+      lcd.clear();      lcd.setCursor(0, 0); lcd.print("wrong pass");
+      Serial.println("Wrong Pass : " + entered_pass);
+      delay(1000);
+    }
+  }
+}
+
+
+
+
+
+
+////////////////////////////////////////////////////
+//      Show initial VeggieFridge Info            //
+////////////////////////////////////////////////////
+
+void Initial_VF_Info( ) {
+
+  lcd.init(); lcd.backlight(); lcd.setCursor(0, 0); lcd.print("GOOD MORNING! ");
+  delay(1000);
+
+  lcd.clear(); lcd.setCursor(1, 0); lcd.print(" Welcome To"); lcd.setCursor(1, 1); lcd.print("VeggieFridge");
+
+  for (int positionCounter = 0; positionCounter < 13; positionCounter++) {
+    // scroll one position left:
+    lcd.scrollDisplayLeft();
+    // wait a bit:
+    delay(100);
+  }
+
+  for (int positionCounter = 0; positionCounter < 29; positionCounter++) {
+    // scroll one position right:
+    lcd.scrollDisplayRight();
+    // wait a bit:
+    delay(100);
+  }
+
+  for (int positionCounter = 0; positionCounter < 16; positionCounter++) {
+    // scroll one position left:
+    lcd.scrollDisplayLeft();
+    // wait a bit:
+    delay(100);
+  }
+
+  lcd.clear();
+
+  delay(500);
+}
+
+
+
+
+
+
+
+
+////////////////////////////////////////////////////
+//      WiFi initialization and connection        //
+////////////////////////////////////////////////////
+
+void checkWiFiConnection() {
+  WiFiManager wifiManager;
+  while (WiFi.status() != WL_CONNECTED) {
+    lcd.clear();
+    
+    lcd.setCursor(0, 0);
+    lcd.print("wait for wifi");
+    if (!wifiManager.autoConnect("Smart-Bottle", "password")) {
+      Serial.println("failed to connect, we should reset as see if it connects");
+      delay(3000);
+      ESP.restart();
+      delay(5000);
+    }
+    delay(1000);
+  }
+}
+
+
+
+
+
+
+
+////////////////////////////////////////////////////
+// File Operations for Password Storing & Reading //
+////////////////////////////////////////////////////
+
+String read_write_password(String filename, String password, String file_mode) {
+
+  String data = "";
+
+  if (file_mode == "w") {
+    File file = SPIFFS.open(filename, "w");
+    Serial.println("Writting data to " + filename);
+    file.print(password);
+    file.close();
+    Serial.println("File " + filename + " close");
+  }
+
+  else if (file_mode == "r") {
+    File file = SPIFFS.open(filename, "r");
+    Serial.println("Reading From " + filename);
+    for (int i = 0; i < file.size(); i++ ) //Read upto complete file size
+    {
+      data += (char)file.read();
+    }
+    file.close();  //Close file
+    Serial.println("File Closed");
+  }
+
+  return data;
+}
+
+void readPasswordsFromFile() {
+  admin_password = read_write_password(admin_filename, "", "r");
+  customer_password = read_write_password(customer_filename, "", "r");
+}
+
+
+
+
+
+
+///////////////////
+//   Call API    //
+///////////////////
+
+#include <Arduino_JSON.h>
+//Api library
+#include <HTTPClient.h>
+HTTPClient http; //Object of class HTTPClient
+String VF_Host = "";//SET IP address /api-URL//
+
+
+String callApi(String param, String type) {
+
+  // Your IP address with path or Domain name with URL path
+  http.begin(VF_Host + param);
+
+  // Send HTTP POST request
+  int httpResponseCode = http.GET();
+
+  String response = " ";
+
+  if (httpResponseCode > 0) {
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+    String payload = http.getString();
+    JSONVar myObject = JSON.parse(payload);
+
+    // JSON.typeof(jsonVar) can be used to get the type of the var
+    if (JSON.typeof(myObject) == "undefined") {
+      Serial.println("Parsing input failed!");
+    }
+
+    else {
+
+      result = myObject["result"];
+      isAnyJob = myObject["isAnyJob"];
+   
+      if (String(result) == true_var && String(isAnyJob) == true_var) {
+        
+        jobType = myObject["jobType"];
+        jobId = myObject["jobId"];
+        String str_jobType = String(jobType);
+
+        Serial.println("Job is Available");
+
+        if (str_jobType == open_door) {
+          openDoor();
+        }
+        else if (str_jobType == check_device) {
+          checkSystem();
+        }
+        else if (str_jobType == change_password) {
+          jobValue = myObject["jobValue"];
+          changePassword();
+        }
+      } 
+      
+      else {
+        Serial.print("No Job is Available");
+      }
+    }
+  }
+  else {
+    Serial.print("Error code: ");
+    Serial.println(httpResponseCode);
+  }
+
+  // Free resources
+  http.end();
+  delay(200);
+
+  return response;
+
+}
+
+
+
+
+
+
+
+/////////////////////////////////////
+//      Calling Status API         //
+/////////////////////////////////////
+
+void systemStatus( void * parameter )
+{
+
+  while (true) {
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi is not connected unable to call status API :(  ");
+    }
+    
+    else {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis > interval) {
+        previousMillis = currentMillis;
+        Serial.println("Calling API for system status ..................................................>>>>>>>> ");
+        callApi("job/isAnyPendingJob?membershipId=" + Membership_ID, "chkStatus");        
+      }
+    }
+    delay(50);
+  }
+}
+
+
+
+
+
+
+
+
+
+  
+  ///////////////////////////////
+  ///////   Load Cell   /////////
+  ///////////////////////////////
+
+void init_load_sensor() {
+  
+  Serial.println("Starting Load Cell");
+  
+  LoadCell.begin();
+  float calibrationValue = 410; 
+  LoadCell.start(2000, true);
+  
+  if (LoadCell.getTareTimeoutFlag()) {  Serial.println("Timeout, check MCU>HX711 wiring and pin designations");  }
+  else {  LoadCell.setCalFactor(calibrationValue); // set calibration value (float)    Serial.println("Startup is complete");  }
+  }
+}
+
+
+
+void chk_bottle_weight() {
+  if (LoadCell.update()) {
+    float load_weight = LoadCell.getData();
+    Serial.print("grams: ");
+    Serial.print(load_weight);
+    
+    if (load_weight > 500.0 && admin_placed_bottle == false){
+      Serial.println("  Bottle has placed by Admin");
+      admin_placed_bottle = true;
+      setInitialTiming(0,0,0);
+      door_opened = true;
+      lcd.clear(); lcd.print("Bottle Placed");
+    }
+    
+    else if (load_weight < 500.0  ){
+      Serial.println("  Bottle has taken by Customer");
+      admin_placed_bottle = false;
+      customer_taken_bottle = true;
+      if (door_opened==true){
+        door_opened = false;
+        lcd.clear(); lcd.print("Bottle Taken");
+        delay(2000);
+      }
+      setInitialTiming(0,0,0);
+    }
+  }
+}
+
+
+
+
+
+
+  ///////////////////////////////
+  /////   Bottle Delay    ///////
+  ///////////////////////////////
+
+void setInitialTiming(int initHrs, int initMin, int initSec) {  setTime(initHrs, initMin, initSec, 0, 0, 0); }
+
+boolean one_hrs_api_called = false;
+boolean two_hrs_api_called = false;
+boolean three_hrs_api_called = false;
+boolean four_hrs_api_called = false;
+
+void check_bottle_placed_delay(){
+
+  if (admin_placed_bottle==true){
+    
+  Serial.println(hour());
+  Serial.print(":");if(minute() < 10) { Serial.print('0');} Serial.print(minute());
+  Serial.print(":");if(second() < 10) { Serial.print('0');} Serial.print(second());
+    
+    if (second() >= 30 && one_hrs_api_called==false){  Serial.println("Calling 1 hrs bottle delay  API"); one_hrs_api_called=true; lcd.clear(); lcd.print("Calling 1 hrs API"); }
+    
+    if (minute() >= 1 && two_hrs_api_called==false){  Serial.println("Calling 2 hrs bottle delay  API"); two_hrs_api_called=true; lcd.clear(); lcd.print("Calling 2 hrs API"); }
+
+    if (second() >= 30 && minute() >= 1 && three_hrs_api_called==false){  Serial.println("Calling 3 hrs bottle delay  API"); three_hrs_api_called=true; lcd.clear(); lcd.print("Calling 3 hrs API"); }
+
+    if (second() >= 60 && minute() >= 1 && four_hrs_api_called==false){  Serial.println("Calling 4 hrs bottle delay  API"); four_hrs_api_called=true; lcd.clear(); lcd.print("Calling 4 hrs API"); }
+  }
+}
+
+
+
+
+
+
+
+
+
+void openDoor() {
+  Serial.println("\n\n ***** Door Openening Request ***** \n\n");
+  door_opened = true;
+  digitalWrite(relay,LOW );
+  delay(5000);
+  digitalWrite(relay,HIGH);
+  callApi("job/jobHasCompletedByDevice?jobId=" + String(jobId) + "&jobResult=door_opened","taksDone");
+}
+
+
+
+void checkSystem() {
+  Serial.println("\n\n ***** Is  System is Online Request ***** \n\n");
+  delay(2000);
+  callApi("job/jobHasCompletedByDevice?jobId=" + String(jobId) + "&jobResult=system_online","taksDone");
+}
+
+
+
+
+void changePassword() {
+  
+  Serial.println("\n\n ***** Password Changing Request ****** \n\n");
+  delay(1000);
+
+  String str_jobValue = String(jobValue);
+  if (str_jobValue != "" && str_jobValue != customer_password) {
+    Serial.println("\nPassword changed from server");
+    read_write_password(customer_filename, str_jobValue, "w");
+    readPasswordsFromFile();
+  }
+
+  callApi("job/jobHasCompletedByDevice?jobId=" + String(jobId) + "&jobResult=password_changed","taksDone");
+
+}
